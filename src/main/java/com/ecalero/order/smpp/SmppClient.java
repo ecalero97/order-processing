@@ -85,7 +85,7 @@ public class SmppClient {
             submit.setDestAddress(new Address((byte)0x01, (byte)0x01, phoneNumber));
             submit.setShortMessage(messageText.getBytes());
             session.submit(submit, 10000);
-            log.info("Message send successfully for order {}", 1);
+            log.info("Message send successfully");
         } catch (InterruptedException ex) {
             log.error("Error on send message InterruptedException received", ex);
             Thread.currentThread().interrupt();

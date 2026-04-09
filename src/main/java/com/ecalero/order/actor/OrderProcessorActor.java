@@ -2,6 +2,8 @@ package com.ecalero.order.actor;
 
 import akka.actor.AbstractActor;
 import akka.actor.Props;
+import com.ecalero.order.actor.message.OrderSaveFailedMessage;
+import com.ecalero.order.actor.message.OrderSavedMessage;
 import com.ecalero.order.actor.message.ProcessOrderMessage;
 import com.ecalero.order.domain.model.Order;
 import com.ecalero.order.domain.repository.OrderRepository;
@@ -13,8 +15,11 @@ import io.grpc.Status;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bson.types.ObjectId;
+import reactor.core.publisher.Mono;
 
 import java.time.OffsetDateTime;
+
+import static akka.pattern.Patterns.pipe;
 
 @Slf4j
 @RequiredArgsConstructor
@@ -31,6 +36,8 @@ public class OrderProcessorActor extends AbstractActor {
     public Receive createReceive() {
         return receiveBuilder()
                 .match(ProcessOrderMessage.class, this::handleProcessOrder)
+                .match(OrderSavedMessage.class, this::handleOrderSaved)
+                .match(OrderSaveFailedMessage.class, this::handleSaveFailure)
                 .matchAny(msg -> log.warn("No Handler found for message: {}", msg))
                 .build();
     }
@@ -51,22 +58,49 @@ public class OrderProcessorActor extends AbstractActor {
                     .ts(OffsetDateTime.now())
                     .build();
 
-            orderRepository.save(order).block();
-            log.debug("Order {} saved successfully", orderId);
-            String smsText = "Your order " + orderId + " has been processed";
-            smppClientService.sendSms(request.getCustomerPhoneNumber(), smsText);
-            orderMetrics.incrementOrdersProcessed();
-            OrderResponse response = OrderResponse.newBuilder()
-                    .setOrderId(orderId)
-                    .setStatus("PROCESSED")
-                    .build();
+            pipe(
+                    orderRepository.save(order)
+                            .map(saved -> (Object) new OrderSavedMessage(saved, message))
+                            .onErrorResume(ex -> Mono.just(new OrderSaveFailedMessage(message, ex)))
+                            .toFuture(),
+                    getContext().getDispatcher()
+            ).to(getSelf());
 
-            observer.onNext(response);
-            observer.onCompleted();
         } catch (Exception ex) {
             log.error("Error on process order with id {}", orderId, ex);
             orderMetrics.incrementOrdersError();
             observer.onError(Status.INTERNAL.withDescription("Error on process order").asRuntimeException());
         }
     }
+
+    private void handleOrderSaved(OrderSavedMessage orderSavedMessage) {
+        ProcessOrderMessage original = orderSavedMessage.originalMessage();
+        String orderId = original.request().getOrderId();
+        log.info("Order {} saved successfully", orderId);
+        String smsText = "Your order " + orderId + " has been processed";
+        log.info("Sending SMPP message for order {}", orderId);
+        smppClientService.sendSms(original.request().getCustomerPhoneNumber(), smsText);
+        orderMetrics.incrementOrdersProcessed();
+        original.responseObserver().onNext(
+                OrderResponse.newBuilder()
+                        .setOrderId(orderId)
+                        .setStatus("PROCESSED")
+                        .build()
+        );
+        original.responseObserver().onCompleted();
+    }
+
+
+    private void handleSaveFailure(OrderSaveFailedMessage failed) {
+        String orderId = failed.originalMessage().request().getOrderId();
+        log.error("Error saving order {}: {}", orderId, failed.cause().getMessage());
+        orderMetrics.incrementOrdersError();
+        failed.originalMessage().responseObserver().onError(
+                io.grpc.Status.INTERNAL
+                        .withDescription("Error processing order")
+                        .asRuntimeException()
+        );
+    }
+
+
 }
