@@ -1,0 +1,38 @@
+app:
+  apiPort: 9090
+  grpcPort: 50051
+
+
+mongo:
+  uri: mongodb://localhost:27017
+  database: orderManagement
+
+smpp:
+  host: 127.0.0.1
+  port: 2775
+  systemId: smppclient1
+  password: password
+
+
+spring:
+  application:
+    name: order-processing
+
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.mongodb.autoconfigure.MongoReactiveAutoConfiguration
+      - org.springframework.boot.data.mongodb.autoconfigure.DataMongoReactiveAutoConfiguration
+
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus, metrics
+  endpoint:
+    prometheus:
+      access: unrestricted
+  prometheus:
+    metrics:
+      export:
+        enabled: true
